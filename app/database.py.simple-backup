@@ -1,0 +1,173 @@
+import logging
+import os
+import psycopg2
+import psycopg2.extras
+from typing import Optional, Dict, Any, List
+from .config import Config
+
+logger = logging.getLogger(__name__)
+
+class DatabaseManager:
+    """Egyszerű PostgreSQL adatbázis kapcsolat kezelő Kyma környezethez"""
+    
+    def __init__(self, config: Optional[Config] = None):
+        """DatabaseManager inicializálása"""
+        self.config = config or Config()
+        self.database_url = self._get_database_url()
+        logger.info("DatabaseManager inicializálva egyszerű connection kezeléssel")
+        
+        # Connection teszt
+        if self.test_connection():
+            logger.info("✅ Adatbázis kapcsolat teszt sikeres")
+        else:
+            logger.error("❌ Adatbázis kapcsolat teszt sikertelen")
+    
+    def _get_database_url(self) -> str:
+        """Database URL lekérése environment változóból"""
+        database_url = os.getenv('DATABASE_URL')
+        if not database_url:
+            logger.error("DATABASE_URL environment változó nincs beállítva")
+            raise ValueError("DATABASE_URL environment változó hiányzik")
+        
+        logger.info(f"Database URL beállítva: {database_url[:30]}...")
+        return database_url
+    
+    def _get_connection(self):
+        """Új kapcsolat létrehozása minden művelethez"""
+        try:
+            conn = psycopg2.connect(
+                self.database_url,
+                cursor_factory=psycopg2.extras.RealDictCursor,
+                connect_timeout=10,
+                application_name="btppg-driver-kyma"
+            )
+            conn.autocommit = False
+            return conn
+        except Exception as e:
+            logger.error(f"Kapcsolat létrehozás sikertelen: {e}")
+            raise
+    
+    def test_connection(self) -> bool:
+        """Adatbázis kapcsolat tesztelése"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 as test")
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            logger.info("Kapcsolat teszt sikeres")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Kapcsolat teszt sikertelen: {e}")
+            return False
+    
+    def execute_query(self, query: str, params: tuple = None) -> List[Dict[str, Any]]:
+        """SQL lekérdezés végrehajtása friss kapcsolattal"""
+        conn = None
+        cursor = None
+        
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            
+            # Ha SELECT lekérdezés
+            if query.strip().upper().startswith('SELECT'):
+                result = cursor.fetchall()
+                # RealDictCursor-t használunk, szóval már dict formátumban kapjuk
+                return [dict(row) for row in result] if result else []
+            else:
+                # INSERT, UPDATE, DELETE esetén
+                conn.commit()
+                return []
+                
+        except Exception as e:
+            logger.error(f"Query végrehajtás hiba: {e}")
+            if conn:
+                conn.rollback()
+            raise
+            
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+    
+    def execute_transaction(self, queries: List[tuple]) -> bool:
+        """Tranzakció végrehajtása (több query egy kapcsolaton)"""
+        conn = None
+        cursor = None
+        
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            for query, params in queries:
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+            
+            conn.commit()
+            logger.info(f"Tranzakció sikeres: {len(queries)} query végrehajtva")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Tranzakció hiba: {e}")
+            if conn:
+                conn.rollback()
+            raise
+            
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+    
+    def get_table_info(self, table_name: str) -> Optional[Dict[str, Any]]:
+        """Tábla információk lekérése"""
+        query = """
+        SELECT 
+            column_name,
+            data_type,
+            is_nullable,
+            column_default
+        FROM information_schema.columns 
+        WHERE table_name = %s 
+        ORDER BY ordinal_position
+        """
+        
+        try:
+            result = self.execute_query(query, (table_name,))
+            return result
+        except Exception as e:
+            logger.error(f"Tábla info lekérés hiba {table_name}: {e}")
+            return None
+    
+    def list_tables(self) -> List[str]:
+        """Összes tábla listázása"""
+        query = """
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        ORDER BY table_name
+        """
+        
+        try:
+            result = self.execute_query(query)
+            return [row['table_name'] for row in result]
+        except Exception as e:
+            logger.error(f"Táblák listázása hiba: {e}")
+            return []
+    
+    def close(self):
+        """Cleanup - egyszerű implementációban nincs persistent connection"""
+        logger.info("DatabaseManager lezárva")
+        pass

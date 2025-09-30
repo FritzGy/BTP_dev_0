@@ -1,0 +1,225 @@
+import logging
+from typing import Dict, Any, List, Optional
+from app.database import DatabaseManager
+from app.models.base import BaseModel
+
+logger = logging.getLogger(__name__)
+
+class DatabaseService:
+    """Adatbázis műveletek szolgáltatás"""
+    
+    def __init__(self, db_manager: DatabaseManager):
+        self.db_manager = db_manager
+    
+    def _convert_for_json(self, records):
+        """Database eredmények JSON-kompatibilis konverziója"""
+        if not records:
+            return []
+        
+        converted_records = []
+        for record in records:
+            converted_record = {}
+            for key, value in record.items():
+                if hasattr(value, 'isoformat'):  # datetime objektum
+                    converted_record[key] = value.isoformat()
+                elif str(type(value)) == "<class 'decimal.Decimal'>":  # Decimal
+                    converted_record[key] = float(value)
+                else:
+                    converted_record[key] = value
+            converted_records.append(converted_record)
+        return converted_records
+    
+    def list_tables(self) -> List[Dict[str, Any]]:
+        """Összes tábla listázása"""
+        query = """
+        SELECT table_name, table_schema 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public'
+        ORDER BY table_name
+        """
+        result = self.db_manager.execute_query(query) or []
+        return self._convert_for_json(result)
+    
+    def get_table_schema(self, table_name: str) -> List[Dict[str, Any]]:
+        """Tábla séma lekérése"""
+        query = """
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = %s
+        ORDER BY ordinal_position
+        """
+        result = self.db_manager.execute_query(query, (table_name,)) or []
+        return self._convert_for_json(result)
+    
+    def table_exists(self, table_name: str) -> bool:
+        """Ellenőrzi, hogy létezik-e a tábla"""
+        query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' AND table_name = %s
+        )
+        """
+        result = self.db_manager.execute_query(query, (table_name,))
+        return result[0]['exists'] if result else False
+    
+    def create_table(self, table_name: str, columns: Dict[str, str]) -> bool:
+        """Tábla létrehozása alapértelmezett mezőkkel"""
+        try:
+            # Alapértelmezett mezők hozzáadása
+            base_schema = BaseModel.get_table_schema(table_name)
+            all_columns = {**base_schema, **columns}
+            
+            # CREATE TABLE SQL összeállítása
+            column_definitions = []
+            for col_name, col_type in all_columns.items():
+                column_definitions.append(f"{col_name} {col_type}")
+            
+            query = f"""
+            CREATE TABLE {table_name} (
+                {', '.join(column_definitions)}
+            )
+            """
+            
+            self.db_manager.execute_query(query, fetch=False)
+            logger.info(f"Tábla létrehozva: {table_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Tábla létrehozási hiba: {e}")
+            return False
+    
+    def add_column(self, table_name: str, column_name: str, column_type: str) -> bool:
+        """Oszlop hozzáadása meglévő táblához"""
+        try:
+            query = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+            self.db_manager.execute_query(query, fetch=False)
+            logger.info(f"Oszlop hozzáadva: {table_name}.{column_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Oszlop hozzáadási hiba: {e}")
+            return False
+    
+    def insert_record(self, table_name: str, data: Dict[str, Any], auth_email: str) -> Optional[str]:
+        """Rekord beszúrása alapértelmezett mezőkkel - JAVÍTOTT VERZIÓ"""
+        try:
+            # Alapértelmezett mezők hozzáadása
+            record_data = BaseModel.add_default_fields(data, auth_email)
+            
+            # INSERT SQL összeállítása
+            columns = list(record_data.keys())
+            placeholders = ['%s'] * len(columns)
+            values = list(record_data.values())
+            
+            query = f"""
+            INSERT INTO {table_name} ({', '.join(columns)})
+            VALUES ({', '.join(placeholders)})
+            RETURNING id
+            """
+            
+            # FONTOS: fetch=True használata a RETURNING clause miatt
+            result = self.db_manager.execute_query(query, tuple(values), fetch=True)
+            
+            if result and len(result) > 0:
+                record_id = result[0]['id']
+                logger.info(f"Rekord beszúrva: {table_name}, ID: {record_id}")
+                return record_id
+            else:
+                logger.error(f"INSERT sikertelen - nincs visszatérési érték: {table_name}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Rekord beszúrási hiba: {e}")
+            return None
+    
+    def update_record(self, table_name: str, record_id: str, data: Dict[str, Any], auth_email: str) -> bool:
+        """Rekord frissítése"""
+        try:
+            # Updated_at mező frissítése
+            data['updated_at'] = BaseModel.get_current_timestamp()
+            
+            # UPDATE SQL összeállítása
+            set_clauses = [f"{key} = %s" for key in data.keys()]
+            values = list(data.values()) + [record_id]
+            
+            query = f"""
+            UPDATE {table_name} 
+            SET {', '.join(set_clauses)}
+            WHERE id = %s
+            """
+            
+            self.db_manager.execute_query(query, tuple(values), fetch=False)
+            logger.info(f"Rekord frissítve: {table_name}, ID: {record_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Rekord frissítési hiba: {e}")
+            return False
+    
+    def delete_record(self, table_name: str, record_id: str) -> bool:
+        """Rekord törlése"""
+        try:
+            query = f"DELETE FROM {table_name} WHERE id = %s"
+            self.db_manager.execute_query(query, (record_id,), fetch=False)
+            logger.info(f"Rekord törölve: {table_name}, ID: {record_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Rekord törlési hiba: {e}")
+            return False
+    
+    def get_records(self, table_name: str, limit: int = 100, offset: int = 0, 
+                   email_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Rekordok lekérése szűrési lehetőségekkel"""
+        try:
+            query = f"SELECT * FROM {table_name}"
+            params = []
+            
+            if email_filter:
+                query += " WHERE auth_email = %s"
+                params.append(email_filter)
+            
+            query += f" ORDER BY created_at DESC LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+            
+            records = self.db_manager.execute_query(query, tuple(params)) or []
+            return self._convert_for_json(records)
+            
+        except Exception as e:
+            logger.error(f"Rekord lekérési hiba: {e}")
+            return []
+    
+    def count_records(self, table_name: str, email_filter: Optional[str] = None) -> int:
+        """Rekordok számának lekérése"""
+        try:
+            query = f"SELECT COUNT(*) as count FROM {table_name}"
+            params = []
+            
+            if email_filter:
+                query += " WHERE auth_email = %s"
+                params.append(email_filter)
+            
+            result = self.db_manager.execute_query(query, tuple(params) if params else None)
+            return result[0]['count'] if result else 0
+            
+        except Exception as e:
+            logger.error(f"Rekord számlálási hiba: {e}")
+            return 0
+    
+    def truncate_table(self, table_name: str) -> bool:
+        """Tábla összes rekordjának törlése"""
+        try:
+            query = f"TRUNCATE TABLE {table_name} RESTART IDENTITY"
+            self.db_manager.execute_query(query, fetch=False)
+            logger.info(f"Tábla kiürítve: {table_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Tábla kiürítési hiba: {e}")
+            return False
+    
+    def execute_raw_sql(self, query: str, params: Optional[tuple] = None) -> List[Dict[str, Any]]:
+        """Nyers SQL lekérdezés végrehajtása (fejlesztői célokra)"""
+        try:
+            result = self.db_manager.execute_query(query, params) or []
+            return self._convert_for_json(result)
+        except Exception as e:
+            logger.error(f"SQL végrehajtási hiba: {e}")
+            return []

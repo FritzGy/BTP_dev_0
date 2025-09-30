@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Read(//tmp/**)",
+      "Bash(curl:*)",
+      "Bash(export PATH=~/bin:$PATH)",
+      "Bash(export KUBECONFIG=/home/gyorgy/Projects/btppg-driver-kyma0/kubeconfig.yaml)",
+      "Bash(kubectl get:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

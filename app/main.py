@@ -1,0 +1,94 @@
+from flask import Flask, jsonify
+import logging
+import os
+from dotenv import load_dotenv
+
+# .env fájl betöltése
+load_dotenv()
+
+from .config import Config
+from .database import DatabaseManager
+
+def create_app() -> Flask:
+    """Flask alkalmazás factory"""
+    app = Flask(__name__)
+
+    # Konfiguráció betöltése
+    config = Config()
+    app.config.update(config.app_config)
+
+    # Logging beállítása
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+    # Database manager inicializálása
+    db_manager = DatabaseManager(config)
+    app.db_manager = db_manager
+
+    # ===== BLUEPRINT REGISZTRÁCIÓK =====
+    
+    # Database routes - NE duplikáld az /api prefix-et!
+    from api.routes.database_routes import database_bp
+    app.register_blueprint(database_bp)  # Már van /api prefix a Blueprint-ben
+    
+    # Import routes
+    from api.routes.import_routes import import_bp
+    from api.routes.test_routes import test_bp
+    app.register_blueprint(import_bp)
+    app.register_blueprint(test_bp)
+
+    # ===== ALAPVETŐ ROUTE-OK =====
+
+    @app.route('/')
+    def home():
+        """Főoldal"""
+        return jsonify({
+            'message': 'btppg-driver API - Neon PostgreSQL',
+            'version': '1.0.0',
+            'status': 'running',
+            'endpoints': {
+                'health': '/health',
+                'api_health': '/api/health',
+                'api_status': '/api/status',
+                'tables': '/api/tables',
+                'test_db': '/test-db'
+            }
+        })
+
+    @app.route('/health')
+    def health():
+        """Health check endpoint Kubernetes számára"""
+        try:
+            # Adatbázis kapcsolat tesztelése
+            db_status = db_manager.test_connection()
+            return jsonify({
+                'status': 'healthy',
+                'service': 'btppg-driver',
+                'version': '1.0.0',
+                'database': 'connected' if db_status else 'disconnected'
+            })
+        except Exception as e:
+            return jsonify({
+                'status': 'unhealthy',
+                'service': 'btppg-driver',
+                'error': str(e)
+            }), 500
+
+    @app.route('/test-db')
+    def test_db():
+        """Adatbázis kapcsolat tesztelése"""
+        try:
+            result = db_manager.test_connection()
+            return jsonify({
+                'database_connection': 'successful' if result else 'failed',
+                'message': 'Database connection test completed'
+            })
+        except Exception as e:
+            return jsonify({
+                'database_connection': 'failed',
+                'error': str(e)
+            }), 500
+
+    return app

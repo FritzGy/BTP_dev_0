@@ -1,0 +1,1 @@
+psql 'postgresql://neondb_owner:npg_jL7BwRrqmnC3@ep-falling-truth-add5709i-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'

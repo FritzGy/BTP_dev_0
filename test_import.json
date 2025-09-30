@@ -1,0 +1,16 @@
+[
+  {
+    "name": "JSON Product 1",
+    "price": 299.99,
+    "category": "JSON Cat 1",
+    "description": "JSON Desc 1",
+    "stock": 30
+  },
+  {
+    "name": "JSON Product 2", 
+    "price": 399.99,
+    "category": "JSON Cat 2",
+    "description": "JSON Desc 2",
+    "stock": 40
+  }
+]

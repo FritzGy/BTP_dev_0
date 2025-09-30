@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: btppg-driver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: btppg-driver
+  template:
+    metadata:
+      labels:
+        app: btppg-driver
+    spec:
+      containers:
+      - name: btppg-driver
+        image: fritzgy/btppg-driver:clean-v1
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - secretRef:
+            name: neon-db-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: btppg-driver
+spec:
+  selector:
+    app: btppg-driver
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
